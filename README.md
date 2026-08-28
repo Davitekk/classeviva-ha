@@ -161,6 +161,12 @@ sola:
   versione recente dell'app.
 - Troppi tentativi di login sbagliati bloccano l'account per circa 15 minuti.
 
+## Crediti
+
+Sviluppato da [@Davitekk](https://github.com/Davitekk) con l'assistenza di
+**Claude** (Anthropic), che ha collaborato al reverse engineering del registro
+e alla scrittura del codice.
+
 ## Licenza
 
 [MIT](LICENSE)
