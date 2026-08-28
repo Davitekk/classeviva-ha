@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ClasseViva Spaggiari",
+        "description": "Enter your ClasseViva electronic register credentials.",
+        "data": {
+          "Username": "Username",
+          "Password": "Password",
+          "Anno": "Select school year"
+        },
+        "data_description": {
+          "Username": "The email or user code you sign in to ClasseViva with.",
+          "Password": "Your register password. It is stored only in Home Assistant.",
+          "Anno": "\"Ultimo\" follows the most recent year available. You can also type a school year: 25/26, 2025/2026 or 25."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Wrong credentials, or the account is locked.",
+      "cannot_connect": "Cannot reach ClasseViva.",
+      "anno_non_valido": "School year not recognised. Use \"Ultimo\", or a format like 25/26, 2025/2026 or 25."
+    },
+    "abort": {
+      "already_configured": "This student is already configured for this school year."
+    }
+  }
+}

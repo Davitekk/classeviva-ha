@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ClasseViva Spaggiari",
+        "description": "Inserisci le credenziali del registro elettronico ClasseViva.",
+        "data": {
+          "Username": "Username",
+          "Password": "Password",
+          "Anno": "Seleziona Anno"
+        },
+        "data_description": {
+          "Username": "Email o codice utente con cui accedi a ClasseViva.",
+          "Password": "La password del registro. Viene salvata solo in Home Assistant.",
+          "Anno": "\"Ultimo\" segue l'anno più recente disponibile. Puoi anche scrivere l'anno scolastico: 25/26, 2025/2026 oppure 25."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Credenziali errate o account bloccato.",
+      "cannot_connect": "Impossibile connettersi a ClasseViva.",
+      "anno_non_valido": "Anno scolastico non riconosciuto. Usa \"Ultimo\", oppure un formato come 25/26, 2025/2026 o 25."
+    },
+    "abort": {
+      "already_configured": "Questo studente è già configurato per questo anno scolastico."
+    }
+  }
+}

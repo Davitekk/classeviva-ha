@@ -1,0 +1,53 @@
+leggi_comunicazione:
+  name: Leggi comunicazione
+  description: >-
+    Scarica il testo completo di una comunicazione della bacheca. Attenzione: la
+    comunicazione viene marcata come LETTA sul registro, esattamente come se la
+    si aprisse nell'app ufficiale.
+  fields:
+    pub_id:
+      name: ID comunicazione
+      description: >-
+        Il campo pub_id della comunicazione, che si legge negli attributi del
+        sensore Bacheca.
+      required: true
+      example: "12345678"
+      selector:
+        text:
+    entry_id:
+      name: Account
+      description: >-
+        Da indicare solo se hai configurato ClasseViva piu' volte (piu' studenti
+        o piu' anni scolastici).
+      required: false
+      selector:
+        config_entry:
+          integration: classeviva
+
+carica_testi_bacheca:
+  name: Carica testi bacheca
+  description: >-
+    Scarica dal portale web il testo delle comunicazioni che non ce l'hanno
+    ancora, senza segnarle come lette.
+  fields:
+    entry_id:
+      name: Account
+      description: Solo se hai configurato ClasseViva piu' volte.
+      required: false
+      selector:
+        config_entry:
+          integration: classeviva
+
+aggiorna:
+  name: Aggiorna adesso
+  description: >-
+    Forza subito il download dei dati da ClasseViva, senza aspettare
+    l'aggiornamento periodico.
+  fields:
+    entry_id:
+      name: Account
+      description: Solo se hai configurato ClasseViva piu' volte.
+      required: false
+      selector:
+        config_entry:
+          integration: classeviva

@@ -1,0 +1,15 @@
+# credenziali e dati personali: non devono MAI finire nel repo
+config.json
+secrets.yaml
+*.har
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# sistema
+.DS_Store
+Thumbs.db
