@@ -12,7 +12,7 @@ voti, medie, agenda, bacheca, note e scrutini come entità di Home Assistant.
 
 C'è anche una **card dedicata**: [classeviva-card][card-url].
 
-## Cosa espone
+## Funzioni
 
 ### Sensori
 
@@ -159,7 +159,7 @@ sola:
 - La chiave API in `const.py` è quella dell'app Android ufficiale. Spaggiari la cambia
   periodicamente: se il login inizia a dare errore `apikey.3` va ri-catturata da una
   versione recente dell'app.
-- Troppi tentativi di login sbagliati bloccano l'account per circa 15 minuti.
+- Troppi tentativi di login sbagliati bloccano l'account per circa 60 minuti.
 
 ## Crediti
 
