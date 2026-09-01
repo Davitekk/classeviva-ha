@@ -73,7 +73,9 @@ class ClasseVivaCoordinator(DataUpdateCoordinator):
             async with async_timeout.timeout(30):
                 data = await self.api.async_fetch()
         except ClasseVivaAuthError as err:
-            # Forza il re-login: azzera i token e riprova al ciclo successivo
+            # Solo credenziali rifiutate: qui la riautenticazione ci sta, perche'
+            # senza intervento dell'utente non si va avanti. Il token scaduto
+            # NON passa di qui: lo gestisce api.py rifacendo il login da solo.
             self.api.token = None
             raise ConfigEntryAuthFailed(str(err)) from err
         except ClasseVivaApiError as err:
@@ -87,7 +89,28 @@ class ClasseVivaCoordinator(DataUpdateCoordinator):
         await self._aggiungi_scrutini_web(data)
         # NB: i testi delle comunicazioni non lette NON si scaricano qui.
         # Vedi async_testi_bacheca: si prendono solo su richiesta esplicita.
+        self._conserva_precedenti(data)
         return data
+
+    # sezioni che possono restare vuote se una delle due fonti non risponde
+    _SEZIONI = (
+        "voti", "medie_materia", "medie_periodo", "periodi", "media", "grades_year",
+        "agenda", "note_web", "scrutini", "noticeboard", "didactics", "notes",
+    )
+
+    def _conserva_precedenti(self, data: dict) -> None:
+        """Tiene i dati dell'ultimo aggiornamento riuscito per le sezioni vuote.
+
+        Ogni ciclo ricostruisce tutto da zero: se il portale (o il REST) non
+        risponde, quella sezione resterebbe vuota e in dashboard i dati
+        sparirebbero, per poi ricomparire solo al giro dopo. Meglio mostrare
+        il dato precedente, che e' comunque quello vero.
+        """
+        vecchi = self.data or {}
+        for chiave in self._SEZIONI:
+            if not data.get(chiave) and vecchi.get(chiave):
+                data[chiave] = vecchi[chiave]
+                _LOGGER.debug("Sezione '%s' non aggiornata: tengo il dato precedente", chiave)
 
     async def _aggiungi_note_web(self, data: dict) -> None:
         """Note disciplinari e annotazioni: il REST le espone sempre vuote."""

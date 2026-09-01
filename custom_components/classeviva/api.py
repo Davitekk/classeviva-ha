@@ -49,6 +49,16 @@ class ClasseVivaApiError(Exception):
     """Errore generico di comunicazione."""
 
 
+class ClasseVivaTokenScaduto(ClasseVivaApiError):
+    """Il token non e' piu' valido: basta rifare il login, le credenziali sono buone.
+
+    Volutamente diverso da ClasseVivaAuthError: quello fa scattare in Home
+    Assistant la riautenticazione, che SOSPENDE l'integrazione finche' l'utente
+    non interviene. I token ClasseViva scadono dopo circa 90 minuti, quindi
+    trattarli come credenziali errate bloccherebbe l'integrazione da sola.
+    """
+
+
 class ClasseVivaApi:
     """Gestisce login, scelta del server/anno e download dei dati."""
 
@@ -110,7 +120,10 @@ class ClasseVivaApi:
             # Password scaduta / va cambiata dal portale
             raise ClasseVivaAuthError(data.get("message", "Login non processabile (422)."))
         if status == 420:
-            raise ClasseVivaAuthError("Account bloccato temporaneamente (troppi tentativi). Attendi ~15 min.")
+            # temporaneo: riprovare piu' tardi, non chiedere di riautenticarsi
+            raise ClasseVivaApiError(
+                "Account bloccato temporaneamente (troppi tentativi). Riprovo piu' tardi."
+            )
         if status in (401, 403):
             raise ClasseVivaAuthError("Credenziali errate.")
         if status != 200 or not data.get("token"):
@@ -214,7 +227,7 @@ class ClasseVivaApi:
                     self.token = None
                 else:
                     self.token_ap = None
-                raise ClasseVivaAuthError(f"Token scaduto su {host}.")
+                raise ClasseVivaTokenScaduto(f"Token scaduto su {host}.")
 
             # L'anno in corso non è ancora partito: si passa al piano successivo.
             _LOGGER.debug("%s su %s: %s", resource, host, status)
@@ -222,10 +235,20 @@ class ClasseVivaApi:
         return None, None, None
 
     async def async_fetch(self) -> dict:
-        """Scarica tutti i dati utili, con degrado morbido se qualcosa non c'è."""
+        """Scarica tutti i dati, rifacendo il login se il token e' scaduto."""
         if not self.token:
             await self.login()
+        try:
+            return await self._scarica()
+        except ClasseVivaTokenScaduto:
+            _LOGGER.debug("Token scaduto: rifaccio il login e riprovo")
+            self.token = None
+            self.token_ap = None
+            await self.login()
+            return await self._scarica()
 
+    async def _scarica(self) -> dict:
+        """Un giro completo di download, con degrado morbido se qualcosa non c'è."""
         result: dict = {
             "first_name": self.first_name,
             "student_id": self.student_id,
