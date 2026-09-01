@@ -1,17 +1,17 @@
 {
   "domain": "classeviva",
   "name": "ClasseViva Spaggiari",
-  "version": "3.1.0",
-  "documentation": "https://github.com/Davitekk/classeviva-ha",
-  "issue_tracker": "https://github.com/Davitekk/classeviva-ha/issues",
   "codeowners": [
     "@Davitekk"
   ],
+  "config_flow": true,
   "dependencies": [
     "http"
   ],
-  "requirements": [],
-  "config_flow": true,
+  "documentation": "https://github.com/Davitekk/classeviva-ha",
   "integration_type": "service",
-  "iot_class": "cloud_polling"
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/Davitekk/classeviva-ha/issues",
+  "requirements": [],
+  "version": "3.1.1"
 }
