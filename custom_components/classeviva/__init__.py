@@ -5,10 +5,11 @@ import logging
 
 import voluptuous as vol
 
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers import entity_registry as er
 
@@ -101,6 +102,16 @@ def _ws_dati_card(hass: HomeAssistant, connection, msg: dict) -> None:
     ):
         connection.send_error(msg["id"], "entity_not_found", "Voti ClasseViva non trovati.")
         return
+
+    if (
+        not connection.user.is_admin
+        and not connection.user.permissions.check_entity(entity.entity_id, POLICY_READ)
+    ):
+        raise Unauthorized(
+            user_id=connection.user.id,
+            entity_id=entity.entity_id,
+            permission=POLICY_READ,
+        )
 
     coordinator = _coordinatori(hass).get(entity.config_entry_id)
     if coordinator is None or coordinator.data is None:
