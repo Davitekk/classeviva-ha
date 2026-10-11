@@ -8,12 +8,13 @@ Nota: lo stato di un sensore in HA è max 255 caratteri: le liste stanno negli a
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import date, timedelta
 from urllib.parse import urlencode
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .api import parse_anno
 from .const import DOMAIN
 from .coordinator import ClasseVivaCoordinator
 from .download import DOWNLOAD_URL
@@ -55,6 +56,18 @@ NOTE_MAX = 150
 TESTO_MAX = 500
 NOTE_LIMIT = 40
 NOTE_TESTO_MAX = 300
+SCRUTINI_LIMIT = 20
+
+
+def _in_school_year(value, year_start: int) -> bool:
+    """True when an ISO date belongs to September 1 through August 31."""
+    if not value:
+        return False
+    try:
+        event_date = date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return False
+    return date(year_start, 9, 1) <= event_date < date(year_start + 1, 9, 1)
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -106,7 +119,7 @@ class _Base(CoordinatorEntity, SensorEntity):
         path = f"{DOWNLOAD_URL}?{urlencode(params)}"
         if async_sign_path is not None:
             try:
-                return async_sign_path(self.hass, path, timedelta(hours=12))
+                return async_sign_path(self.coordinator.hass, path, timedelta(hours=12))
             except Exception as err:  # noqa: BLE001
                 # Meglio saperlo: un URL non firmato dà 401 al momento del click.
                 _LOGGER.warning("Firma dell'URL di download non riuscita: %s", err)
@@ -138,7 +151,7 @@ class MediaSensor(_Base):
     @property
     def extra_state_attributes(self):
         return {
-            "anno": self._data.get("grades_year"),
+            "anno": self._data.get("grades_year") or self.coordinator.etichetta_anno or None,
             "per_materia": self._data.get("medie_materia", []),
             "per_periodo": self._data.get("medie_periodo", {}),
         }
@@ -151,7 +164,7 @@ class GradesSensor(_Base):
     _label = "Voti"
     _icon = "mdi:numeric"
 
-    def _items(self) -> list[dict]:
+    def _items(self, limit: int | None = VOTI_LIMIT) -> list[dict]:
         voti = self._data.get("voti")
         if voti:
             # "periodo" per esteso si ripete su ogni voto: negli attributi tengo
@@ -167,7 +180,7 @@ class GradesSensor(_Base):
                     "negativo": v.get("negativo"),
                     "in_media": not v.get("escluso_media"),
                 }
-                for v in voti[:VOTI_LIMIT]
+                for v in (voti if limit is None else voti[:limit])
             ]
         return [
             {
@@ -178,7 +191,11 @@ class GradesSensor(_Base):
                 "tipo": g.get("componentDesc") or g.get("evtCode"),
                 "note": g.get("notesForFamily"),
             }
-            for g in self._data.get("grades", [])[:VOTI_LIMIT]
+            for g in (
+                self._data.get("grades", [])
+                if limit is None
+                else self._data.get("grades", [])[:limit]
+            )
         ]
 
     @property
@@ -189,12 +206,18 @@ class GradesSensor(_Base):
     def extra_state_attributes(self):
         voti = self._data.get("voti") or []
         return {
-            "anno": self._data.get("grades_year"),
+            "anno": self._data.get("grades_year") or self.coordinator.etichetta_anno or None,
             "fonte": self._data.get("voti_fonte"),
             "insufficienze": sum(1 for v in voti if v.get("negativo")),
             "periodi": self._data.get("periodi", {}),
             "items": self._items(),
         }
+
+    def card_attributes(self) -> dict:
+        """Attributi completi per la risposta WebSocket della card."""
+        attributes = dict(self.extra_state_attributes)
+        attributes["items"] = self._items(limit=None)
+        return attributes
 
 
 class DidacticsSensor(_Base):
@@ -244,14 +267,30 @@ class NoticeboardSensor(_Base):
 
     @property
     def extra_state_attributes(self):
+        return self._attributes()
+
+    def _attributes(
+        self,
+        item_limit: int | None = NOTICEBOARD_LIMIT,
+        text_limit: int | None = TESTO_MAX,
+        school_year: int | None = None,
+    ) -> dict:
         # le più recenti, più TUTTE le non lette: sono quelle che interessano di
         # più e restare fuori dal limite le renderebbe invisibili in dashboard
         tutte_le_com = self._data.get("noticeboard", [])
-        selezionate = list(tutte_le_com[:NOTICEBOARD_LIMIT])
-        gia = {id(c) for c in selezionate}
-        for c in tutte_le_com[NOTICEBOARD_LIMIT:]:
-            if not c.get("readStatus", True) and id(c) not in gia:
-                selezionate.append(c)
+        if school_year is not None:
+            tutte_le_com = [
+                c for c in tutte_le_com
+                if _in_school_year(c.get("pubDT"), school_year)
+            ]
+        if item_limit is None:
+            selezionate = list(tutte_le_com)
+        else:
+            selezionate = list(tutte_le_com[:item_limit])
+            gia = {id(c) for c in selezionate}
+            for c in tutte_le_com[item_limit:]:
+                if not c.get("readStatus", True) and id(c) not in gia:
+                    selezionate.append(c)
 
         items = []
         for c in selezionate:
@@ -269,6 +308,8 @@ class NoticeboardSensor(_Base):
                     }
                 )
             testo = c.get("text") or ""
+            if text_limit is not None:
+                testo = testo[:text_limit]
             items.append(
                 {
                     "data": (c.get("pubDT") or "")[:10],
@@ -278,13 +319,13 @@ class NoticeboardSensor(_Base):
                     # di validità. Le scadute restano in bacheca, come sul sito.
                     "attiva": bool(c.get("cntValidInRange")),
                     "valida_fino": c.get("cntValidTo"),
-                    "testo": testo[:TESTO_MAX],
-                    "troncato": len(testo) > TESTO_MAX,
+                    "testo": testo,
+                    "troncato": text_limit is not None and len(c.get("text") or "") > text_limit,
                     "pub_id": c.get("pubId"),
                     "allegati": attachments,
                 }
             )
-        tutte = self._data.get("noticeboard", [])
+        tutte = tutte_le_com
         return {
             "totale": len(tutte),
             "attive": sum(1 for c in tutte if c.get("cntValidInRange")),
@@ -304,8 +345,16 @@ class NotesSensor(_Base):
     _label = "Note"
     _icon = "mdi:alert-circle"
 
-    def _note(self) -> list[dict]:
+    def _note(
+        self,
+        limit: int | None = NOTE_LIMIT,
+        text_limit: int | None = NOTE_TESTO_MAX,
+    ) -> list[dict]:
         web = self._data.get("note_web")
+        def testo(value):
+            value = value or ""
+            return value if text_limit is None else value[:text_limit]
+
         if web:
             return [
                 {
@@ -315,9 +364,9 @@ class NotesSensor(_Base):
                     "richiamo": bool(n.get("richiamo")),
                     "letta": n.get("letta", True),
                     "autore": n.get("autore"),
-                    "testo": (n.get("testo") or "")[:NOTE_TESTO_MAX],
+                    "testo": testo(n.get("testo")),
                 }
-                for n in web[:NOTE_LIMIT]
+                for n in (web if limit is None else web[:limit])
             ]
         return [
             {
@@ -325,9 +374,13 @@ class NotesSensor(_Base):
                 "tipo": n.get("_type"),
                 "categoria": CATEGORIA_DISCIPLINARE,
                 "autore": n.get("authorName"),
-                "testo": (n.get("evtText") or n.get("evtValue") or "")[:NOTE_TESTO_MAX],
+                "testo": testo(n.get("evtText") or n.get("evtValue")),
             }
-            for n in self._data.get("notes", [])[:NOTE_LIMIT]
+            for n in (
+                self._data.get("notes", [])
+                if limit is None
+                else self._data.get("notes", [])[:limit]
+            )
         ]
 
     @property
@@ -336,7 +389,14 @@ class NotesSensor(_Base):
 
     @property
     def extra_state_attributes(self):
-        note = self._note()
+        return self._attributes()
+
+    def _attributes(
+        self,
+        limit: int | None = NOTE_LIMIT,
+        text_limit: int | None = NOTE_TESTO_MAX,
+    ) -> dict:
+        note = self._note(limit=limit, text_limit=text_limit)
         return {
             "anno": self._data.get("note_anno"),
             "fonte": self._data.get("note_fonte"),
@@ -365,8 +425,14 @@ class ScrutiniSensor(_Base):
 
     @property
     def extra_state_attributes(self):
+        return self._attributes()
+
+    def _attributes(self, limit: int | None = SCRUTINI_LIMIT) -> dict:
         items = []
-        for i, d in enumerate(self._data.get("scrutini", [])):
+        documenti = self._data.get("scrutini", [])
+        if limit is not None:
+            documenti = documenti[:limit]
+        for i, d in enumerate(documenti):
             items.append(
                 {
                     "descrizione": d.get("descrizione"),
@@ -403,6 +469,13 @@ class AgendaSensor(_Base):
 
     @property
     def extra_state_attributes(self):
+        return self._attributes()
+
+    def _attributes(
+        self,
+        item_limit: int | None = AGENDA_LIMIT,
+        note_limit: int | None = NOTE_MAX,
+    ) -> dict:
         agenda = self._agenda()
         items = []
         # i piu' recenti per primi: sono quelli che interessa vedere in dashboard
@@ -410,8 +483,12 @@ class AgendaSensor(_Base):
             agenda,
             key=lambda x: x.get("evtDatetimeBegin") or x.get("evtDate") or "",
             reverse=True,
-        )[:AGENDA_LIMIT]:
-            note = (e.get("notes") or "")[:NOTE_MAX]
+        ):
+            if item_limit is not None and len(items) >= item_limit:
+                break
+            note = e.get("notes") or ""
+            if note_limit is not None:
+                note = note[:note_limit]
             items.append(
                 {
                     "inizio": e.get("evtDatetimeBegin") or e.get("evtDate"),
@@ -428,3 +505,126 @@ class AgendaSensor(_Base):
             "totale": len(agenda),
             "items": items,
         }
+
+
+def card_data(coordinator: ClasseVivaCoordinator, entry_id: str) -> dict:
+    """Build the complete, school-year-scoped payload for the Lovelace card.
+
+    This response is sent over Home Assistant's authenticated WebSocket API.
+    It is not written to sensor state attributes or the recorder.
+    """
+    data = coordinator.data or {}
+    year_start = coordinator.anno
+    if year_start is None:
+        for source in (
+            data.get("grades_year"),
+            data.get("agenda_anno"),
+            data.get("note_anno"),
+            data.get("scrutini_anno"),
+        ):
+            if source:
+                try:
+                    year_start = parse_anno(source)
+                except ValueError:
+                    continue
+                if year_start is not None:
+                    break
+
+    media_sensor = MediaSensor(coordinator, entry_id)
+    grades_sensor = GradesSensor(coordinator, entry_id)
+    noticeboard_sensor = NoticeboardSensor(coordinator, entry_id)
+    notes_sensor = NotesSensor(coordinator, entry_id)
+    scrutini_sensor = ScrutiniSensor(coordinator, entry_id)
+    agenda_sensor = AgendaSensor(coordinator, entry_id)
+
+    grade_items = grades_sensor._items(limit=None)
+    if year_start is not None:
+        grade_items = [v for v in grade_items if _in_school_year(v.get("data"), year_start)]
+    grade_attributes = grades_sensor.card_attributes()
+    grade_attributes["items"] = grade_items
+
+    # Recompute summaries from the same complete, date-filtered web grades
+    # displayed in the card. The regular sensor keeps its compact stored value.
+    web_grades = data.get("voti") or []
+    if web_grades:
+        if year_start is not None:
+            web_grades = [v for v in web_grades if _in_school_year(v.get("data"), year_start)]
+        summaries = calcola_medie(web_grades)
+        media_value = summaries["media"]
+        media_attributes = dict(media_sensor.extra_state_attributes)
+        media_attributes["per_materia"] = summaries["medie_materia"]
+        media_attributes["per_periodo"] = summaries["medie_periodo"]
+        grade_attributes["insufficienze"] = sum(1 for v in web_grades if v.get("negativo"))
+    else:
+        media_value = media_sensor.native_value
+        media_attributes = media_sensor.extra_state_attributes
+
+    board_attributes = noticeboard_sensor._attributes(
+        item_limit=None,
+        text_limit=None,
+        school_year=year_start,
+    )
+    board_items = board_attributes["items"]
+    board_value = sum(1 for item in board_items if not item.get("letto", True))
+
+    note_attributes = notes_sensor._attributes(limit=None, text_limit=None)
+    if year_start is not None:
+        note_attributes["items"] = [
+            item for item in note_attributes["items"]
+            if _in_school_year(item.get("data"), year_start)
+        ]
+    note_items = note_attributes["items"]
+    note_attributes["disciplinari"] = sum(
+        1 for item in note_items if item.get("categoria") == CATEGORIA_DISCIPLINARE
+    )
+    note_attributes["annotazioni"] = sum(
+        1 for item in note_items if item.get("categoria") == CATEGORIA_ANNOTAZIONE
+    )
+    note_attributes["richiami"] = sum(1 for item in note_items if item.get("richiamo"))
+    note_attributes["da_leggere"] = sum(1 for item in note_items if not item.get("letta", True))
+
+    agenda_attributes = agenda_sensor._attributes(item_limit=None, note_limit=None)
+    if year_start is not None:
+        agenda_attributes["items"] = [
+            item for item in agenda_attributes["items"]
+            if _in_school_year(item.get("inizio"), year_start)
+        ]
+    agenda_attributes["totale"] = len(agenda_attributes["items"])
+
+    scrutini_attributes = scrutini_sensor._attributes(limit=None)
+    if year_start is not None:
+        items = []
+        for item in scrutini_attributes["items"]:
+            if not item.get("anno"):
+                items.append(item)
+                continue
+            try:
+                item_year = parse_anno(item["anno"])
+            except ValueError:
+                continue
+            if item_year in (None, year_start):
+                items.append(item)
+        scrutini_attributes["items"] = items
+    scrutini_attributes["ultimo"] = (
+        scrutini_attributes["items"][0]["descrizione"]
+        if scrutini_attributes["items"] else None
+    )
+
+    return {
+        "nome": coordinator.first_name,
+        "anno": year_start,
+        "entita": {
+            "media": {"state": media_value, "attributes": media_attributes},
+            "voti": {"state": len(grade_items), "attributes": grade_attributes},
+            "bacheca": {"state": board_value, "attributes": board_attributes},
+            "note": {"state": len(note_items), "attributes": note_attributes},
+            "scrutini": {
+                "state": len(scrutini_attributes["items"]),
+                "attributes": scrutini_attributes,
+            },
+            "agenda": {
+                "state": len(agenda_attributes["items"]),
+                "attributes": agenda_attributes,
+            },
+        },
+    }
