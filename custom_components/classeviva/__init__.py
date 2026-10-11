@@ -33,6 +33,7 @@ SCHEMA_LEGGI = vol.Schema(
 )
 SCHEMA_ISTANZA = vol.Schema({vol.Optional("entry_id"): cv.string})
 WS_CARD_DATA = f"{DOMAIN}/card_data"
+CARD_SENSOR_KEYS = ("media", "grades", "noticeboard", "notes", "scrutini", "agenda")
 
 
 def leggi(dati: dict, chiave: str, default=None):
@@ -112,6 +113,26 @@ def _ws_dati_card(hass: HomeAssistant, connection, msg: dict) -> None:
             entity_id=entity.entity_id,
             permission=POLICY_READ,
         )
+
+    if not connection.user.is_admin:
+        registry = er.async_get(hass)
+        student_id = entity.unique_id.removeprefix("cvv_grades_")
+        for key in CARD_SENSOR_KEYS:
+            sensor_id = registry.async_get_entity_id(
+                "sensor", DOMAIN, f"cvv_{key}_{student_id}"
+            )
+            sensor = registry.async_get(sensor_id) if sensor_id else None
+            if sensor is None or sensor.config_entry_id != entity.config_entry_id:
+                connection.send_error(
+                    msg["id"], "entity_not_found", "Entita ClasseViva non trovata."
+                )
+                return
+            if not connection.user.permissions.check_entity(sensor.entity_id, POLICY_READ):
+                raise Unauthorized(
+                    user_id=connection.user.id,
+                    entity_id=sensor.entity_id,
+                    permission=POLICY_READ,
+                )
 
     coordinator = _coordinatori(hass).get(entity.config_entry_id)
     if coordinator is None or coordinator.data is None:
