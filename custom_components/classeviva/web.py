@@ -825,11 +825,11 @@ class ClasseVivaWebApi:
 
 
 def _intervallo_anno(anno: int | None) -> tuple[int, int]:
-    """Intervallo dell'anno scolastico come timestamp unix (1 set -> 31 ago)."""
+    """Intervallo semichiuso: 1 settembre incluso, 1 settembre escluso."""
     if not anno:
         oggi = datetime.now()
         anno = oggi.year if oggi.month >= 9 else oggi.year - 1
     return (
         int(datetime(anno, 9, 1).timestamp()),
-        int(datetime(anno + 1, 8, 31, 23, 59, 59).timestamp()),
+        int(datetime(anno + 1, 9, 1).timestamp()),
     )

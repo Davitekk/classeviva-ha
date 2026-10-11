@@ -5,14 +5,18 @@ import logging
 
 import voluptuous as vol
 
+from homeassistant.auth.permissions.const import POLICY_READ
+from homeassistant.components import websocket_api
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, callback
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers import entity_registry as er
 
 from .const import CONF_ANNO, CONF_PASSWORD, CONF_USERNAME, DOMAIN
 from .coordinator import ClasseVivaCoordinator
 from .download import ClasseVivaDownloadView
+from .sensor import card_data
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +32,8 @@ SCHEMA_LEGGI = vol.Schema(
     }
 )
 SCHEMA_ISTANZA = vol.Schema({vol.Optional("entry_id"): cv.string})
+WS_CARD_DATA = f"{DOMAIN}/card_data"
+CARD_SENSOR_KEYS = ("media", "grades", "noticeboard", "notes", "scrutini", "agenda")
 
 
 def leggi(dati: dict, chiave: str, default=None):
@@ -58,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    _registra_websocket(hass)
 
     # Registra una sola volta la vista per il download degli allegati.
     if not hass.data[DOMAIN].get("_download_view"):
@@ -76,6 +83,71 @@ def _coordinatori(hass: HomeAssistant) -> dict[str, ClasseVivaCoordinator]:
         k: v for k, v in hass.data.get(DOMAIN, {}).items()
         if isinstance(v, ClasseVivaCoordinator)
     }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): WS_CARD_DATA,
+        vol.Required("entity_id"): cv.entity_id,
+    }
+)
+@callback
+def _ws_dati_card(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Return complete year data without storing it in sensor attributes."""
+    entity = er.async_get(hass).async_get(msg["entity_id"])
+    if (
+        entity is None
+        or entity.platform != DOMAIN
+        or not entity.unique_id.startswith("cvv_grades_")
+        or entity.config_entry_id is None
+    ):
+        connection.send_error(msg["id"], "entity_not_found", "Voti ClasseViva non trovati.")
+        return
+
+    if (
+        not connection.user.is_admin
+        and not connection.user.permissions.check_entity(entity.entity_id, POLICY_READ)
+    ):
+        raise Unauthorized(
+            user_id=connection.user.id,
+            entity_id=entity.entity_id,
+            permission=POLICY_READ,
+        )
+
+    if not connection.user.is_admin:
+        registry = er.async_get(hass)
+        student_id = entity.unique_id.removeprefix("cvv_grades_")
+        for key in CARD_SENSOR_KEYS:
+            sensor_id = registry.async_get_entity_id(
+                "sensor", DOMAIN, f"cvv_{key}_{student_id}"
+            )
+            sensor = registry.async_get(sensor_id) if sensor_id else None
+            if sensor is None or sensor.config_entry_id != entity.config_entry_id:
+                connection.send_error(
+                    msg["id"], "entity_not_found", "Entita ClasseViva non trovata."
+                )
+                return
+            if not connection.user.permissions.check_entity(sensor.entity_id, POLICY_READ):
+                raise Unauthorized(
+                    user_id=connection.user.id,
+                    entity_id=sensor.entity_id,
+                    permission=POLICY_READ,
+                )
+
+    coordinator = _coordinatori(hass).get(entity.config_entry_id)
+    if coordinator is None or coordinator.data is None:
+        connection.send_error(msg["id"], "entry_not_loaded", "Dati ClasseViva non disponibili.")
+        return
+
+    connection.send_result(msg["id"], card_data(coordinator, entity.config_entry_id))
+
+
+def _registra_websocket(hass: HomeAssistant) -> None:
+    """Register the card data command once for this Home Assistant instance."""
+    if hass.data[DOMAIN].get("_websocket_registered"):
+        return
+    websocket_api.async_register_command(hass, _ws_dati_card)
+    hass.data[DOMAIN]["_websocket_registered"] = True
 
 
 def _registra_servizi(hass: HomeAssistant) -> None:
