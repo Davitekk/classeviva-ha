@@ -12,6 +12,10 @@ voti, medie, agenda, bacheca, note e scrutini come entità di Home Assistant.
 
 C'è anche una **card dedicata**: [classeviva-card][card-url].
 
+La card può selezionare l'anno scolastico tra le istanze configurate. Il periodo
+va dal **1° settembre** al **31 agosto** compreso. Per mostrare più anni, aggiungi
+lo stesso account una volta per ogni anno nelle opzioni dell'integrazione.
+
 ## Funzioni
 
 ### Sensori
@@ -25,6 +29,11 @@ C'è anche una **card dedicata**: [classeviva-card][card-url].
 | Note | note e annotazioni | `items` con `categoria`, `richiamo`, `letta`; `da_leggere` |
 | Scrutini | documenti pubblicati | `items` con `download_url` (pagelle, pagellini, recuperi) |
 | File Docenti | file condivisi | `items` per docente, con `download_url` |
+
+Gli attributi dei sensori restano limitati per contenere la dimensione registrata
+da Home Assistant. La card richiede i dati completi tramite il WebSocket autenticato
+di Home Assistant: questi dati sono restituiti alla card e non vengono salvati come
+stati o attributi dei sensori.
 
 ### Calendari
 
