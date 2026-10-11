@@ -54,7 +54,7 @@ class ClasseVivaDownloadView(HomeAssistantView):
                 return web.Response(status=400, text="Tipo allegato non valido")
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Download ClasseViva fallito: %s", err)
-            return web.Response(status=502, text=f"Errore ClasseViva: {err}")
+            return web.Response(status=502, text="Errore ClasseViva")
 
         if not real:
             return web.Response(status=404, text="Allegato non disponibile")
