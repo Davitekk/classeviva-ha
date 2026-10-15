@@ -409,6 +409,13 @@ def parse_scrutini(pagina: str) -> list[dict]:
     return fuori
 
 
+def _inizio_risposta(testo: str, massimo: int = 120) -> str:
+    """Primi caratteri di una risposta, per il log: spazi ridotti, senza email o numeri lunghi."""
+    breve = " ".join(testo[:massimo * 2].split())[:massimo]
+    breve = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "[email]", breve)
+    return re.sub(r"\d{5,}", "#", breve)
+
+
 def _percorso(url) -> str:
     """Solo il percorso di un indirizzo, per i log: senza host, query o id di sessione."""
     return urlsplit(str(url)).path.split(";")[0] or "/"
@@ -619,11 +626,13 @@ class ClasseVivaWebApi:
                 return m.group(1) if m else ""
 
             inizio, fine = _intervallo_anno(anno)
+            classe_id = _var("classe_id_page")
+            gruppo_id = _var("gruppo_id_page")
             async with self._session.post(
                 f"{url}?ope=get_events",
                 data={
-                    "classe_id": _var("classe_id_page"),
-                    "gruppo_id": _var("gruppo_id_page"),
+                    "classe_id": classe_id,
+                    "gruppo_id": gruppo_id,
                     "nascondi_av": "0",
                     "start": inizio,
                     "end": fine,
@@ -633,6 +642,8 @@ class ClasseVivaWebApi:
                     **{"X-Requested-With": "XMLHttpRequest", "Referer": url},
                 ),
             ) as resp:
+                stato = resp.status
+                tipo = resp.headers.get("Content-Type", "")
                 testo = await resp.text()
         except aiohttp.ClientError as err:
             _LOGGER.debug("Agenda non scaricata da %s: %s", host, err)
@@ -642,7 +653,14 @@ class ClasseVivaWebApi:
             eventi = json.loads(testo)
         except ValueError:
             _LOGGER.debug("Risposta agenda non JSON da %s", host)
-            return self._fallita("risposta non JSON", url)
+            return self._fallita(
+                "risposta non JSON "
+                f"(stato {stato}, {tipo or 'tipo assente'}, {len(testo)} caratteri, "
+                f"classe_id {'trovato' if classe_id else 'assente'}, "
+                f"gruppo_id {'trovato' if gruppo_id else 'assente'}, "
+                f"inizio: {_inizio_risposta(testo)!r})",
+                url,
+            )
         return eventi if isinstance(eventi, list) else []
 
     # ------------------------------------------------------------------ note
