@@ -416,15 +416,48 @@ def _maschera(testo: str) -> str:
     return re.sub(r"\d{5,}", "#", testo)
 
 
+_RE_REDIRECT_JS = re.compile(
+    r"""(?:location(?:\.href)?\s*=(?!=)|location\.(?:replace|assign)\s*\()\s*['"]([^'"]+)['"]""",
+    re.I)
+_RE_REDIRECT_META = re.compile(
+    r"""<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]*content\s*=\s*["'][^"']*?url\s*=\s*([^"'>\s;]+)""",
+    re.I)
+_RE_RISORSE = re.compile(
+    r"""<(?:script[^>]+src|link[^>]+href)\s*=\s*["']([^"']+)["']""", re.I)
+
+
+def _senza_query(indirizzo: str) -> str:
+    """Host e percorso di un indirizzo per il log: niente query, frammento, id di sessione, email."""
+    parti = urlsplit(unescape(indirizzo).strip())
+    return _maschera(f"{parti.netloc}{parti.path.split(';')[0]}")[:80]
+
+
+def _elenco_indirizzi(indirizzi: list[str], massimo: int = 3) -> list[str]:
+    visti: list[str] = []
+    for indirizzo in indirizzi:
+        voce = _senza_query(indirizzo)
+        if voce and voce not in visti:
+            visti.append(voce)
+    return visti[:massimo]
+
+
 def _riassunto_html(testo: str, massimo: int = 120) -> str:
-    """Titolo e testo visibile di una risposta, per il log: niente tag, script, email o numeri lunghi."""
+    """Titolo, testo visibile, redirect e risorse di una risposta, per il log.
+
+    Niente tag, script, email, numeri lunghi o query: dei redirect e delle
+    risorse si tiene solo host e percorso.
+    """
     titolo = re.search(r"<title[^>]*>(.*?)</title>", testo, re.I | re.S)
     visibile = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", testo)
     visibile = re.sub(r"(?s)<[^>]+>", " ", visibile)
     visibile = " ".join(unescape(visibile).split())
     titolo = " ".join(unescape(titolo.group(1)).split()) if titolo else ""
+    redirect = _elenco_indirizzi(
+        _RE_REDIRECT_JS.findall(testo) + _RE_REDIRECT_META.findall(testo))
+    risorse = _elenco_indirizzi(_RE_RISORSE.findall(testo), 4)
     return (f"titolo {_maschera(titolo)[:80]!r}, "
-            f"testo {_maschera(visibile[:massimo * 2])[:massimo]!r}")
+            f"testo {_maschera(visibile[:massimo * 2])[:massimo]!r}, "
+            f"redirect {redirect}, risorse {risorse}")
 
 
 def _percorso(url) -> str:
