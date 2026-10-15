@@ -690,8 +690,10 @@ class ClasseVivaWebApi:
             inizio, fine = _intervallo_anno(anno)
             classe_id = _var("classe_id_page")
             gruppo_id = _var("gruppo_id_page")
-            if not classe_id or not gruppo_id:
-                # Senza questi valori la richiesta degli eventi non puo' funzionare.
+            if (not classe_id or not gruppo_id) and "/_nuxt/" in pagina:
+                # Nuova interfaccia del portale: la pagina non ha piu' questi valori
+                # e la richiesta degli eventi non puo' funzionare. Sulle pagine del
+                # vecchio portale (es. web25) la richiesta si fa come prima.
                 risorse = _elenco_indirizzi(_RE_RISORSE.findall(pagina), 2)
                 return self._fallita(
                     "la pagina agenda non contiene classe_id e gruppo_id "
