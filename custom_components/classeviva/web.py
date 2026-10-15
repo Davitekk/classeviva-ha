@@ -49,6 +49,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from html import unescape
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -409,11 +410,21 @@ def parse_scrutini(pagina: str) -> list[dict]:
     return fuori
 
 
-def _inizio_risposta(testo: str, massimo: int = 120) -> str:
-    """Primi caratteri di una risposta, per il log: spazi ridotti, senza email o numeri lunghi."""
-    breve = " ".join(testo[:massimo * 2].split())[:massimo]
-    breve = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "[email]", breve)
-    return re.sub(r"\d{5,}", "#", breve)
+def _maschera(testo: str) -> str:
+    """Toglie da un testo da loggare gli indirizzi email e i numeri lunghi."""
+    testo = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "[email]", testo)
+    return re.sub(r"\d{5,}", "#", testo)
+
+
+def _riassunto_html(testo: str, massimo: int = 120) -> str:
+    """Titolo e testo visibile di una risposta, per il log: niente tag, script, email o numeri lunghi."""
+    titolo = re.search(r"<title[^>]*>(.*?)</title>", testo, re.I | re.S)
+    visibile = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", testo)
+    visibile = re.sub(r"(?s)<[^>]+>", " ", visibile)
+    visibile = " ".join(unescape(visibile).split())
+    titolo = " ".join(unescape(titolo.group(1)).split()) if titolo else ""
+    return (f"titolo {_maschera(titolo)[:80]!r}, "
+            f"testo {_maschera(visibile[:massimo * 2])[:massimo]!r}")
 
 
 def _percorso(url) -> str:
@@ -658,7 +669,8 @@ class ClasseVivaWebApi:
                 f"(stato {stato}, {tipo or 'tipo assente'}, {len(testo)} caratteri, "
                 f"classe_id {'trovato' if classe_id else 'assente'}, "
                 f"gruppo_id {'trovato' if gruppo_id else 'assente'}, "
-                f"inizio: {_inizio_risposta(testo)!r})",
+                f"risposta: {_riassunto_html(testo)}; "
+                f"pagina agenda: {len(pagina)} caratteri, {_riassunto_html(pagina)})",
                 url,
             )
         return eventi if isinstance(eventi, list) else []
