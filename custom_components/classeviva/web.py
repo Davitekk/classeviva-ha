@@ -477,6 +477,7 @@ class ClasseVivaWebApi:
         # (host, label) -> motivo, per le pagine che falliscono anche con login nuovo
         self._non_disponibili: dict[tuple[str, str], str] = {}
         self._motivo_fallimento: str | None = None
+        self._fallimento_definitivo = False
 
     def _headers(self, **extra: str) -> dict[str, str]:
         h = {
@@ -545,12 +546,15 @@ class ClasseVivaWebApi:
                 f"SSO anno precedente non ha raggiunto {host} (finito su {finale})")
         self._prev_host_attivo = host
 
-    def _fallita(self, motivo: str, url=None) -> None:
+    def _fallita(self, motivo: str, url=None, *, definitiva: bool = False) -> None:
         """Annota perche' `azione()` sta per ritornare None (solo per il log).
 
         Dell'indirizzo si tiene il percorso: niente host, query, id o token.
+        `definitiva` dice che la pagina risponde ma non e' piu' quella attesa:
+        un nuovo login non serve.
         """
         self._motivo_fallimento = f"{motivo} ({_percorso(url)})" if url else motivo
+        self._fallimento_definitivo = definitiva
         return None
 
     async def _con_sessione(self, host: str, storico: bool, azione,
@@ -566,6 +570,7 @@ class ClasseVivaWebApi:
         """
         chiave = (host, label)
         segnata = segna and chiave in self._non_disponibili
+        definitiva = False
         for tentativo in range(1 if segnata else 2):
             try:
                 if not self._logged_in:
@@ -577,6 +582,7 @@ class ClasseVivaWebApi:
                 return None
 
             self._motivo_fallimento = None
+            self._fallimento_definitivo = False
             risultato = await azione()
             if risultato is not None:
                 if segnata:
@@ -592,6 +598,11 @@ class ClasseVivaWebApi:
                 return None
             _LOGGER.debug("Pagina %s su %s non riuscita (tentativo %d): %s",
                           label, host, tentativo + 1, motivo)
+            if segna and self._fallimento_definitivo:
+                # La pagina risponde ma non e' piu' quella attesa: niente nuovo login.
+                definitiva = True
+                self._non_disponibili[chiave] = motivo
+                break
             if segna and tentativo == 1:
                 # Fallita anche dopo un login nuovo: la sessione non c'entra.
                 self._non_disponibili[chiave] = motivo
@@ -600,8 +611,13 @@ class ClasseVivaWebApi:
             # Rimbalzati al login: le credenziali di sessione sono scadute.
             self._logged_in = False
             self._prev_host_attivo = None
-        _LOGGER.warning("Sessione al portale web non utilizzabile su %s (%s): %s",
-                        host, label, motivo)
+        if definitiva:
+            _LOGGER.warning("Pagina %s del portale web non disponibile su %s: %s. "
+                            "Viene ritentata a ogni aggiornamento, senza altri avvisi "
+                            "finche' non risponde di nuovo.", label, host, motivo)
+        else:
+            _LOGGER.warning("Sessione al portale web non utilizzabile su %s (%s): %s",
+                            host, label, motivo)
         return None
 
     # ------------------------------------------------------------------ voti
@@ -672,6 +688,16 @@ class ClasseVivaWebApi:
             inizio, fine = _intervallo_anno(anno)
             classe_id = _var("classe_id_page")
             gruppo_id = _var("gruppo_id_page")
+            if not classe_id or not gruppo_id:
+                # Senza questi valori la richiesta degli eventi non puo' funzionare.
+                risorse = _elenco_indirizzi(_RE_RISORSE.findall(pagina), 2)
+                return self._fallita(
+                    "la pagina agenda non contiene classe_id e gruppo_id "
+                    f"({len(pagina)} caratteri, risorse {risorse}): il portale web "
+                    "sembra usare una nuova interfaccia e l'agenda arriva solo "
+                    "dall'API REST",
+                    url, definitiva=True,
+                )
             async with self._session.post(
                 f"{url}?ope=get_events",
                 data={
