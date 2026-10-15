@@ -13,3 +13,7 @@ venv/
 # sistema
 .DS_Store
 Thumbs.db
+
+# file locali di lavoro: non vanno nel repo
+.claude/
+CLAUDE.md

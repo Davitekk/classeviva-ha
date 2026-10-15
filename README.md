@@ -25,15 +25,19 @@ lo stesso account una volta per ogni anno nelle opzioni dell'integrazione.
 | Media | media generale | `per_materia`, `per_periodo`, `anno` |
 | Voti | numero di voti | `items` (data, materia, voto, tipo, periodo), `insufficienze` |
 | Agenda | eventi in agenda | `items` (compiti e annotazioni dei docenti) |
-| Bacheca | comunicazioni non lette | `items` con testo, `pub_id`, `attiva` e `download_url` degli allegati |
+| Bacheca | comunicazioni non lette | `items` con testo, `pub_id`, `attiva` e `download_url` degli allegati; `omesse` |
 | Note | note e annotazioni | `items` con `categoria`, `richiamo`, `letta`; `da_leggere` |
 | Scrutini | documenti pubblicati | `items` con `download_url` (pagelle, pagellini, recuperi) |
 | File Docenti | file condivisi | `items` per docente, con `download_url` |
 
-Gli attributi dei sensori restano limitati per contenere la dimensione registrata
-da Home Assistant. La card richiede i dati completi tramite il WebSocket autenticato
-di Home Assistant: questi dati sono restituiti alla card e non vengono salvati come
-stati o attributi dei sensori.
+Gli attributi del sensore Bacheca usano un budget JSON di 15 KiB. Questo lascia 1 KiB
+di margine sotto il limite di 16 KiB del Recorder. Le comunicazioni non lette e i link
+ai loro allegati hanno priorità. Il testo viene accorciato prima di omettere altre
+comunicazioni. L'attributo `omesse` indica quante comunicazioni non sono incluse.
+
+La card riceve i dati completi tramite il WebSocket autenticato di Home Assistant.
+Questi dati non sono salvati come stati o attributi dei sensori e non usano il budget
+del sensore.
 
 ### Calendari
 

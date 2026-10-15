@@ -7,6 +7,7 @@ Nota: lo stato di un sensore in HA è max 255 caratteri: le liste stanno negli a
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, timedelta
 from urllib.parse import urlencode
@@ -43,9 +44,11 @@ if async_sign_path is None:  # pragma: no cover
         "e daranno 401. Segnala la versione di Home Assistant in uso."
     )
 
-# quante voci esportare negli attributi (per non gonfiare lo stato)
+# Quante comunicazioni lette esportare, oltre a quelle non lette prioritarie.
 # HA tronca gli attributi troppo grandi nel recorder: ~16 KB è il tetto pratico.
 NOTICEBOARD_LIMIT = 20
+# Lascia 1 KiB per gli attributi aggiunti da Home Assistant sotto il limite Recorder.
+NOTICEBOARD_ATTRIBUTE_BUDGET = 15 * 1024
 VOTI_LIMIT = 100
 AGENDA_LIMIT = 50
 # Le annotazioni dei docenti sono spesso lunghissime (link + istruzioni):
@@ -274,9 +277,9 @@ class NoticeboardSensor(_Base):
         item_limit: int | None = NOTICEBOARD_LIMIT,
         text_limit: int | None = TESTO_MAX,
         school_year: int | None = None,
+        byte_budget: int | None = NOTICEBOARD_ATTRIBUTE_BUDGET,
     ) -> dict:
-        # le più recenti, più TUTTE le non lette: sono quelle che interessano di
-        # più e restare fuori dal limite le renderebbe invisibili in dashboard
+        # Le non lette hanno priorità. Fra le lette, tieni le più recenti.
         tutte_le_com = self._data.get("noticeboard", [])
         if school_year is not None:
             tutte_le_com = [
@@ -284,16 +287,39 @@ class NoticeboardSensor(_Base):
                 if _in_school_year(c.get("pubDT"), school_year)
             ]
         if item_limit is None:
-            selezionate = list(tutte_le_com)
+            priorita = list(enumerate(tutte_le_com))
         else:
-            selezionate = list(tutte_le_com[:item_limit])
-            gia = {id(c) for c in selezionate}
-            for c in tutte_le_com[item_limit:]:
-                if not c.get("readStatus", True) and id(c) not in gia:
-                    selezionate.append(c)
+            non_lette = [
+                (indice, c)
+                for indice, c in enumerate(tutte_le_com)
+                if not c.get("readStatus", True)
+            ]
+            lette_recenti = [
+                (indice, c)
+                for indice, c in enumerate(tutte_le_com)
+                if c.get("readStatus", True)
+            ][:item_limit]
+            priorita = non_lette + lette_recenti
 
-        items = []
-        for c in selezionate:
+        attributi = {
+            "totale": len(tutte_le_com),
+            "attive": sum(1 for c in tutte_le_com if c.get("cntValidInRange")),
+            "mostrate": 0,
+            "omesse": len(tutte_le_com),
+            "items": [],
+        }
+
+        def aggiorna_conteggi() -> None:
+            attributi["mostrate"] = len(attributi["items"])
+            attributi["omesse"] = len(tutte_le_com) - attributi["mostrate"]
+
+        def misura() -> int:
+            # ensure_ascii=True sovrastima il testo UTF-8 e conta la forma JSON
+            # con i caratteri non ASCII convertiti in escape.
+            return len(json.dumps(attributi, ensure_ascii=True).encode("utf-8"))
+
+        candidati = []
+        for indice, c in priorita:
             attachments = []
             for a in c.get("attachments", []):
                 attachments.append(
@@ -307,31 +333,70 @@ class NoticeboardSensor(_Base):
                         ),
                     }
                 )
-            testo = c.get("text") or ""
-            if text_limit is not None:
-                testo = testo[:text_limit]
-            items.append(
-                {
-                    "data": (c.get("pubDT") or "")[:10],
-                    "titolo": c.get("cntTitle"),
-                    "letto": bool(c.get("readStatus")),
-                    # cntValidInRange: la comunicazione è ancora nel suo periodo
-                    # di validità. Le scadute restano in bacheca, come sul sito.
-                    "attiva": bool(c.get("cntValidInRange")),
-                    "valida_fino": c.get("cntValidTo"),
-                    "testo": testo,
-                    "troncato": text_limit is not None and len(c.get("text") or "") > text_limit,
-                    "pub_id": c.get("pubId"),
-                    "allegati": attachments,
-                }
+            testo_originale = c.get("text") or ""
+            limite_testo = (
+                len(testo_originale)
+                if text_limit is None
+                else min(len(testo_originale), text_limit)
             )
-        tutte = tutte_le_com
-        return {
-            "totale": len(tutte),
-            "attive": sum(1 for c in tutte if c.get("cntValidInRange")),
-            "mostrate": len(items),
-            "items": items,
-        }
+            item = {
+                "data": (c.get("pubDT") or "")[:10],
+                "titolo": c.get("cntTitle"),
+                "letto": bool(c.get("readStatus")),
+                # cntValidInRange: la comunicazione è ancora nel suo periodo
+                # di validità. Le scadute restano in bacheca, come sul sito.
+                "attiva": bool(c.get("cntValidInRange")),
+                "valida_fino": c.get("cntValidTo"),
+                "testo": testo_originale[:limite_testo] if byte_budget is None else "",
+                "troncato": (
+                    len(testo_originale) > limite_testo
+                    if byte_budget is None
+                    else bool(testo_originale)
+                ),
+                "pub_id": c.get("pubId"),
+                "allegati": attachments,
+            }
+            candidati.append((indice, item, testo_originale, limite_testo))
+
+        if byte_budget is None:
+            attributi["items"] = [item for _, item, _, _ in candidati]
+            aggiorna_conteggi()
+            return attributi
+
+        # Riserva prima lo spazio per i dati e tutti i link agli allegati.
+        # Le comunicazioni non lette precedono quelle lette.
+        inclusi = []
+        for indice, item, testo_originale, limite_testo in candidati:
+            attributi["items"].append(item)
+            aggiorna_conteggi()
+            if misura() <= byte_budget:
+                inclusi.append((indice, item, testo_originale, limite_testo))
+            else:
+                attributi["items"].pop()
+                aggiorna_conteggi()
+
+        # Usa i byte rimasti per il testo, seguendo le priorità. Accorcia il
+        # testo prima di omettere una comunicazione e segnala ogni taglio.
+        for _, item, testo_originale, limite_testo in inclusi:
+            basso = 0
+            alto = limite_testo
+            while basso < alto:
+                medio = (basso + alto + 1) // 2
+                item["testo"] = testo_originale[:medio]
+                item["troncato"] = medio < len(testo_originale)
+                if misura() <= byte_budget:
+                    basso = medio
+                else:
+                    alto = medio - 1
+            item["testo"] = testo_originale[:basso]
+            item["troncato"] = basso < len(testo_originale)
+
+        # Mantieni l'ordine della sorgente nell'interfaccia dopo aver usato la
+        # priorità delle comunicazioni non lette per assegnare lo spazio.
+        per_indice = {indice: item for indice, item, _, _ in inclusi}
+        attributi["items"] = [per_indice[i] for i in sorted(per_indice)]
+        aggiorna_conteggi()
+        return attributi
 
 
 class NotesSensor(_Base):
@@ -563,6 +628,7 @@ def card_data(coordinator: ClasseVivaCoordinator, entry_id: str) -> dict:
         item_limit=None,
         text_limit=None,
         school_year=year_start,
+        byte_budget=None,
     )
     board_items = board_attributes["items"]
     board_value = sum(1 for item in board_items if not item.get("letto", True))
