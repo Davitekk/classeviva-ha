@@ -49,6 +49,7 @@ import json
 import logging
 import re
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -408,6 +409,11 @@ def parse_scrutini(pagina: str) -> list[dict]:
     return fuori
 
 
+def _percorso(url) -> str:
+    """Solo il percorso di un indirizzo, per i log: senza host, query o id di sessione."""
+    return urlsplit(str(url)).path.split(";")[0] or "/"
+
+
 class ClasseVivaWebApi:
     """Sessione autenticata sul portale web legacy (voti e agenda)."""
 
@@ -417,6 +423,9 @@ class ClasseVivaWebApi:
         self._password = password
         self._logged_in = False
         self._prev_host_attivo: str | None = None
+        # (host, label) -> motivo, per le pagine che falliscono anche con login nuovo
+        self._non_disponibili: dict[tuple[str, str], str] = {}
+        self._motivo_fallimento: str | None = None
 
     def _headers(self, **extra: str) -> dict[str, str]:
         h = {
@@ -485,13 +494,28 @@ class ClasseVivaWebApi:
                 f"SSO anno precedente non ha raggiunto {host} (finito su {finale})")
         self._prev_host_attivo = host
 
-    async def _con_sessione(self, host: str, storico: bool, azione):
+    def _fallita(self, motivo: str, url=None) -> None:
+        """Annota perche' `azione()` sta per ritornare None (solo per il log).
+
+        Dell'indirizzo si tiene il percorso: niente host, query, id o token.
+        """
+        self._motivo_fallimento = f"{motivo} ({_percorso(url)})" if url else motivo
+        return None
+
+    async def _con_sessione(self, host: str, storico: bool, azione,
+                            label: str = "pagina", *, segna: bool = True):
         """Esegue `azione()` con una sessione valida su `host`.
 
         Se la richiesta viene rimbalzata al login (azione ritorna None) rifa'
         l'autenticazione una volta sola e riprova; poi si arrende.
+
+        Con `segna` una pagina che fallisce anche dopo un login nuovo viene
+        segnata come non disponibile (avviso una sola volta): da li' si prova
+        una volta per giro, senza nuovi login, finche' non torna a funzionare.
         """
-        for _ in range(2):
+        chiave = (host, label)
+        segnata = segna and chiave in self._non_disponibili
+        for tentativo in range(1 if segnata else 2):
             try:
                 if not self._logged_in:
                     await self.login()
@@ -501,14 +525,32 @@ class ClasseVivaWebApi:
                 _LOGGER.debug("Sessione non pronta su %s: %s", host, err)
                 return None
 
+            self._motivo_fallimento = None
             risultato = await azione()
             if risultato is not None:
+                if segnata:
+                    del self._non_disponibili[chiave]
+                    _LOGGER.info("Pagina %s di nuovo disponibile su %s", label, host)
                 return risultato
+
+            motivo = self._motivo_fallimento or "motivo non indicato"
+            if segnata:
+                # La sessione e' buona: e' la pagina a non esserci, niente re-login.
+                _LOGGER.debug("Pagina %s ancora non disponibile su %s: %s",
+                              label, host, motivo)
+                return None
+            _LOGGER.debug("Pagina %s su %s non riuscita (tentativo %d): %s",
+                          label, host, tentativo + 1, motivo)
+            if segna and tentativo == 1:
+                # Fallita anche dopo un login nuovo: la sessione non c'entra.
+                self._non_disponibili[chiave] = motivo
+                break
 
             # Rimbalzati al login: le credenziali di sessione sono scadute.
             self._logged_in = False
             self._prev_host_attivo = None
-        _LOGGER.warning("Sessione al portale web non utilizzabile su %s", host)
+        _LOGGER.warning("Sessione al portale web non utilizzabile su %s (%s): %s",
+                        host, label, motivo)
         return None
 
     # ------------------------------------------------------------------ voti
@@ -522,11 +564,11 @@ class ClasseVivaWebApi:
             ) as resp:
                 pagina = await resp.text()
                 if "login.php" in str(resp.url):
-                    return None
+                    return self._fallita("redirect al login", resp.url)
                 return pagina
         except aiohttp.ClientError as err:
             _LOGGER.debug("Pagina voti non scaricata da %s: %s", host, err)
-            return None
+            return self._fallita(f"errore di rete ({type(err).__name__})")
 
     async def async_fetch_voti(self, piani: list[tuple[str, int | None, bool]]) -> dict:
         """Scarica i voti seguendo i piani server/anno decisi dall'API REST.
@@ -539,7 +581,9 @@ class ClasseVivaWebApi:
                            "anno": None, "fonte": None}
 
         for host, anno, storico in piani:
-            pagina = await self._con_sessione(host, storico, lambda: self._scarica_voti(host))
+            pagina = await self._con_sessione(
+                host, storico, lambda: self._scarica_voti(host), "voti"
+            )
             if pagina is None:
                 continue
 
@@ -568,7 +612,7 @@ class ClasseVivaWebApi:
             ) as resp:
                 pagina = await resp.text()
                 if "login.php" in str(resp.url):
-                    return None
+                    return self._fallita("redirect al login", resp.url)
 
             def _var(nome: str) -> str:
                 m = re.search(_RE_VAR_JS.format(nome=nome), pagina)
@@ -592,13 +636,13 @@ class ClasseVivaWebApi:
                 testo = await resp.text()
         except aiohttp.ClientError as err:
             _LOGGER.debug("Agenda non scaricata da %s: %s", host, err)
-            return None
+            return self._fallita(f"errore di rete ({type(err).__name__})")
 
         try:
             eventi = json.loads(testo)
         except ValueError:
             _LOGGER.debug("Risposta agenda non JSON da %s", host)
-            return None
+            return self._fallita("risposta non JSON", url)
         return eventi if isinstance(eventi, list) else []
 
     # ------------------------------------------------------------------ note
@@ -612,11 +656,11 @@ class ClasseVivaWebApi:
             ) as resp:
                 pagina = await resp.text()
                 if "login.php" in str(resp.url):
-                    return None
+                    return self._fallita("redirect al login", resp.url)
                 return pagina
         except aiohttp.ClientError as err:
             _LOGGER.debug("Pagina %s non scaricata da %s: %s", path, host, err)
-            return None
+            return self._fallita(f"errore di rete ({type(err).__name__})")
 
     async def async_fetch_note(self, piani: list[tuple[str, int | None, bool]]) -> dict:
         """Note disciplinari e annotazioni dei docenti."""
@@ -624,7 +668,7 @@ class ClasseVivaWebApi:
 
         for host, anno, storico in piani:
             pagina = await self._con_sessione(
-                host, storico, lambda: self._scarica_pagina(host, NOTE_PATH)
+                host, storico, lambda: self._scarica_pagina(host, NOTE_PATH), "note"
             )
             if pagina is None:
                 continue
@@ -667,13 +711,13 @@ class ClasseVivaWebApi:
                     ),
                 ) as resp:
                     if resp.status != 200:
-                        return None
+                        return self._fallita(f"stato HTTP {resp.status}")
                     return await resp.json(content_type=None)
             except (aiohttp.ClientError, ValueError) as err:
                 _LOGGER.debug("Testi bacheca non scaricati: %s", err)
-                return None
+                return self._fallita(f"errore ({type(err).__name__})")
 
-        dati = await self._con_sessione(BASE_HOST, False, _chiedi)
+        dati = await self._con_sessione(BASE_HOST, False, _chiedi, "bacheca")
         if not isinstance(dati, dict):
             return {}
 
@@ -703,7 +747,7 @@ class ClasseVivaWebApi:
 
         for host, anno, storico in piani:
             pagina = await self._con_sessione(
-                host, storico, lambda: self._scarica_pagina(host, SCRUTINI_PATH)
+                host, storico, lambda: self._scarica_pagina(host, SCRUTINI_PATH), "scrutini"
             )
             if pagina is None:
                 continue
@@ -743,17 +787,22 @@ class ClasseVivaWebApi:
                     async with self._session.get(
                         indirizzo, headers=self._headers(Accept="text/html,application/pdf,*/*")
                     ) as resp:
-                        if resp.status != 200 or "login.php" in str(resp.url):
-                            return None
+                        if resp.status != 200:
+                            return self._fallita(f"stato HTTP {resp.status}")
+                        if "login.php" in str(resp.url):
+                            return self._fallita("redirect al login", resp.url)
                         return (
                             await resp.read(),
                             resp.headers.get("Content-Type", "text/html"),
                         )
                 except aiohttp.ClientError as err:
                     _LOGGER.debug("Documento %s non scaricato: %s", indirizzo, err)
-                    return None
+                    return self._fallita(f"errore di rete ({type(err).__name__})")
 
-            esito = await self._con_sessione(host, storico, _prendi)
+            # Richiesta su comando, non di ogni giro: niente marcatura "non disponibile".
+            esito = await self._con_sessione(
+                host, storico, _prendi, "documento", segna=False
+            )
             return esito if esito else (None, None)
 
         async def _ricava():
@@ -773,17 +822,19 @@ class ClasseVivaWebApi:
                     ),
                 ) as resp:
                     if resp.status != 200:
-                        return None
+                        return self._fallita(f"stato HTTP {resp.status}")
                     dati = await resp.json(content_type=None)
             except (aiohttp.ClientError, ValueError) as err:
                 _LOGGER.debug("Generazione documento fallita: %s", err)
-                return None
+                return self._fallita(f"errore ({type(err).__name__})")
             if not dati or not dati.get("visualizzabile"):
                 _LOGGER.debug("Documento non visualizzabile: %s", (dati or {}).get("error"))
-                return None
+                return self._fallita("documento non visualizzabile")
             return dati.get("url_documento")
 
-        indirizzo = await self._con_sessione(host, storico, _ricava)
+        indirizzo = await self._con_sessione(
+            host, storico, _ricava, "documento", segna=False
+        )
         if not indirizzo:
             return None, None
         if not indirizzo.startswith("http"):
@@ -806,7 +857,7 @@ class ClasseVivaWebApi:
 
         for host, anno, storico in piani:
             eventi = await self._con_sessione(
-                host, storico, lambda: self._scarica_eventi(host, anno)
+                host, storico, lambda: self._scarica_eventi(host, anno), "agenda"
             )
             if not eventi:
                 _LOGGER.debug("Nessun evento in agenda su %s (anno %s)", host, anno)
