@@ -8,6 +8,7 @@ reindirizza il browser. Le URL firmate vengono generate nei sensori.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiohttp import web
 
@@ -37,7 +38,8 @@ class ClasseVivaDownloadView(HomeAssistantView):
         kind = q.get("kind")
 
         coordinator = self.hass.data.get(DOMAIN, {}).get(entry_id)
-        if coordinator is None:
+        # Sotto DOMAIN ci sono anche valori che non sono coordinatori (es. flag).
+        if coordinator is None or not hasattr(coordinator, "api"):
             return web.Response(status=404, text="Integrazione ClasseViva non trovata")
 
         api = coordinator.api
@@ -71,7 +73,10 @@ class ClasseVivaDownloadView(HomeAssistantView):
         """
         try:
             documenti = (coordinator.data or {}).get("scrutini", [])
-            documento = documenti[int(indice)]
+            posizione = int(indice)
+            if posizione < 0:
+                raise IndexError(posizione)
+            documento = documenti[posizione]
         except (TypeError, ValueError, IndexError):
             return web.Response(status=404, text="Documento non trovato")
 
@@ -79,7 +84,11 @@ class ClasseVivaDownloadView(HomeAssistantView):
         if not contenuto:
             return web.Response(status=502, text="Documento non disponibile da ClasseViva")
 
-        nome = (documento.get("descrizione") or "documento").replace('"', "")
+        # Nell'intestazione solo caratteri ASCII stampabili, senza virgolette.
+        nome = "".join(
+            c for c in (documento.get("descrizione") or "documento")
+            if c.isascii() and c.isprintable() and c != '"'
+        ).strip() or "documento"
         mime = (tipo or "application/pdf").split(";")[0].strip()
 
         if mime == "text/html":
@@ -88,13 +97,23 @@ class ClasseVivaDownloadView(HomeAssistantView):
             host = documento.get("host") or BASE_HOST
             base = f'<base href="https://{host}/sol/app/default/">'.encode()
             testo = contenuto
-            punto = testo.lower().find(b"<head")
-            if punto >= 0:
-                chiusura = testo.find(b">", punto)
+            apertura = re.search(rb"<head[\s>]", testo, re.IGNORECASE)
+            if apertura:
+                chiusura = testo.find(b">", apertura.start())
                 testo = testo[: chiusura + 1] + base + testo[chiusura + 1 :]
             else:
                 testo = base + testo
-            return web.Response(body=testo, content_type="text/html", charset="utf-8")
+            # La pagina viene dal portale ma e' servita dall'indirizzo di Home
+            # Assistant: "sandbox" le toglie script e accesso alla sessione di HA.
+            return web.Response(
+                body=testo,
+                content_type="text/html",
+                charset="utf-8",
+                headers={
+                    "Content-Security-Policy": "sandbox",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
 
         return web.Response(
             body=contenuto,

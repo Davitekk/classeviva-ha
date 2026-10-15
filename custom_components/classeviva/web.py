@@ -441,11 +441,12 @@ def _elenco_indirizzi(indirizzi: list[str], massimo: int = 3) -> list[str]:
     return visti[:massimo]
 
 
-def _riassunto_html(testo: str, massimo: int = 120) -> str:
-    """Titolo, testo visibile, redirect e risorse di una risposta, per il log.
+def _riassunto_html(testo: str, massimo: int = 120, *, con_testo: bool = False) -> str:
+    """Titolo, redirect e risorse di una risposta, per il log.
 
     Niente tag, script, email, numeri lunghi o query: dei redirect e delle
-    risorse si tiene solo host e percorso.
+    risorse si tiene solo host e percorso. Il testo visibile (che potrebbe
+    contenere nomi) si aggiunge solo con `con_testo`, per il log di debug.
     """
     titolo = re.search(r"<title[^>]*>(.*?)</title>", testo, re.I | re.S)
     visibile = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", testo)
@@ -455,8 +456,9 @@ def _riassunto_html(testo: str, massimo: int = 120) -> str:
     redirect = _elenco_indirizzi(
         _RE_REDIRECT_JS.findall(testo) + _RE_REDIRECT_META.findall(testo))
     risorse = _elenco_indirizzi(_RE_RISORSE.findall(testo), 4)
-    return (f"titolo {_maschera(titolo)[:80]!r}, "
-            f"testo {_maschera(visibile[:massimo * 2])[:massimo]!r}, "
+    testo_log = (f", testo {_maschera(visibile[:massimo * 2])[:massimo]!r}"
+                 if con_testo else "")
+    return (f"titolo {_maschera(titolo)[:80]!r}{testo_log}, "
             f"redirect {redirect}, risorse {risorse}")
 
 
@@ -722,7 +724,8 @@ class ClasseVivaWebApi:
         try:
             eventi = json.loads(testo)
         except ValueError:
-            _LOGGER.debug("Risposta agenda non JSON da %s", host)
+            _LOGGER.debug("Risposta agenda non JSON da %s: %s", host,
+                          _riassunto_html(testo, con_testo=True))
             return self._fallita(
                 "risposta non JSON "
                 f"(stato {stato}, {tipo or 'tipo assente'}, {len(testo)} caratteri, "
@@ -885,7 +888,7 @@ class ClasseVivaWebApi:
                             resp.headers.get("Content-Type", "text/html"),
                         )
                 except aiohttp.ClientError as err:
-                    _LOGGER.debug("Documento %s non scaricato: %s", indirizzo, err)
+                    _LOGGER.debug("Documento %s non scaricato: %s", _percorso(indirizzo), err)
                     return self._fallita(f"errore di rete ({type(err).__name__})")
 
             # Richiesta su comando, non di ogni giro: niente marcatura "non disponibile".
